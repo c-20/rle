@@ -1,0 +1,2 @@
+# rle
+run length encoding
