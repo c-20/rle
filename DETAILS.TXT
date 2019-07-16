@@ -1,0 +1,13 @@
+implements run length encoding
+60KB output files, 250ms compression vs 1.2s for PNG on ARM
+further improvement possible by remapping FF00FFFF to EE
+ and EE to CCEE and CC to CCCC (CC expects extra byte CC or EE
+
+CCEE is EE
+CCCCEE is CCFF00FFFF
+CCCCCC is CC and a missing clarity byte (expect CC or EE)!
+CCCCCCEE is CCEE
+CCCCCCEEEE is CCEEFF00FFFF
+CCCCCCEEEEEE is CCEEFF00FFFFFF00FFFF
+
+TODO!
