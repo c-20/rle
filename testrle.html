@@ -1,0 +1,652 @@
+<html><head>
+  <meta charset="utf-8" />
+  <title>&tau;</title>
+  <style id="imgzoom" type="text/css">
+/*    img { transform: scale(0.01); } */
+/* transform-origin: 50% 50%; } */
+/* transform to thirds: scale(0.33) origin: ... no, multiserver through host connection */
+  </style>
+  <style id="imggrid" type="text/css">
+    html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; }
+    #title { position: absolute; top: 0; left: 0; right: 0; height: 16px;
+             background-color: #77c; color: #fd5; font-weight: bold; text-align: center; }
+    #view, #send { position: absolute; } // , #bsend, #brecv, #dsend, #drecv { position: absolute; }
+    #view { z-index: 1; top: 16px; left: 0; bottom: 0; right: 0; }
+    #send { z-index: 2; float: right; left: 0; right: 0; bottom: 0;
+            border: #fc3 solid 1px; border-radius: 4px; padding: 2px;
+            background-color: #0cc; opacity: 0.5; }
+    #send input { font-size: 10px; }
+/*    #send * { font-size: 10px; padding: 0; margin: 0; border: none;
+              background: none; } */
+    #log { float: right; clear: none; width: 49%; }
+    #recv { float: left; clear: none; width: 49%; }
+   /* #recv { z-index: 2; top: 10%; left: 55%; bottom: 10%; right: 10%; } */
+  /*  #bsend { z-index: 1; top: -2%; left: -2%; bottom: -2%; right: -2%; }  */
+    #dsend, #drecv { border: none; }
+    .visible    { display: block; background-color: #000; }
+    .failed     { display: block; background-color: #600; }
+    .stopped    { display: block; background-color: #606; }
+    .notvisible { display: none; }
+  </style>
+  <script type="text/javascript">
+
+function id(id) { return document.getElementById(id); }
+
+function togglevisible(el) {
+  if (el.className == 'visible') {
+    el.className = 'notvisible';
+  } else {
+    el.className = 'visible';
+  }
+}
+
+function setvisible(el) {
+  el.className = 'visible';
+}
+function setinvisible(el) {
+  el.className = 'notvisible';
+}
+function setfailed(el) {
+  el.className = 'failed';
+}
+function setstopped(el) {
+  el.className = 'stopped';
+}
+
+function clientime() {
+  var d = new Date();
+  var dt = d.getFullYear();
+  if (d.getMonth() + 1 < 10)
+    { dt += '.0' + (d.getMonth() + 1); }
+  else { dt += '.' + (d.getMonth() + 1); }
+  if (d.getDate() < 10)
+    { dt += '.0' + d.getDate(); }
+  else { dt += '.' + d.getDate(); }
+  if (d.getHours() < 10)
+    { dt += '.0' + d.getHours(); }
+  else { dt += '.' + d.getHours(); }
+  if (d.getMinutes() < 10)
+    { dt += '.0' + d.getMinutes(); }
+  else { dt += '.' + d.getMinutes(); }
+  if (d.getSeconds() < 10)
+    { dt += '.0' + d.getSeconds(); }
+  else { dt += '.' + d.getSeconds(); }
+  if (d.getMilliseconds() < 10)
+    { dt += '.00' + d.getMilliseconds(); }
+  else if (d.getMilliseconds() < 100)
+    { dt += '.0' + d.getMilliseconds(); }
+  else { dt += '.' + d.getMilliseconds(); }
+  return dt;
+}
+
+function clearm1() {
+  id('lm1key').value = '0';
+  id('lm1val').value = '';
+}
+function emptym1() {
+  id('lm1key').value = '';
+  id('lm1val').value = '';
+}
+function clearm2() {
+  id('lm2key').value = '0';
+  id('lm2val').value = '';
+}
+function emptym2() {
+  id('lm2key').value = '';
+  id('lm2val').value = '';
+}
+
+// -- TRANSPORT ---
+var sendmsgdelay = 200; // 10fps limit !
+var sendmsgtimer = undefined;
+function sendmsg() {
+  if (dframe.disabled != true) {
+    console.log('[SENDSTART]');
+ //   console.log("dframe not disabled, sending msg");
+//    if (sendmsgtimer !== undefined) {
+//      clearInterval(sendmsgtimer); // send once, then stop
+//      sendmsgtimer = undefined;
+//      console.log("sendmsg cleared timer");
+//    }
+//    setvisible(id('overlay'));
+    try {
+      id('dframe').disabled = true;
+  // should disable dsend until message received or failure determined
+      var lk = id('lkey');
+      var dk = id('dkey');
+      var lm = id('lmouse');
+      var dm = id('dmouse');
+      var mvk = id('lmvkey');
+      var mvv = id('lmvars');
+      var m1k = id('lm1key');
+      var m1v = id('lm1val');
+      var m2k = id('lm2key');
+      var m2v = id('lm2val');
+      dk.value = lk.value; // first copy keyboard buffer
+      lk.value = ''; // empty input, then check for suffix that indicates m is map or var data
+      dm.value = '';
+      if (lm.value != '') {
+        dm.value += lm.value;
+      }
+//      if (lm.value.substr(0, 1) == '`') {
+//        if (lm.value.substr(1, 1) == '`') {
+//          if (lm.value.substr(2, 1) == '[') { then
+      if (m1k.value != '') {
+        dk.value += '`1[' + m1k.value + ']';
+        dm.value += '+1+' + m1v.value;
+        clearm1();
+      }
+      if (m2k.value != '') {
+        dk.value += '`2[' + m2k.value + ']';
+        dm.value += '+2+' + m2v.value;
+        clearm2();
+      }
+      if (mvk.value != '') {
+        dk.value += '``[' + mvk.value + ']';
+        dm.value += ';' + mvv.value;
+        mvk.value = '';
+        mvv.value = '';
+      }
+      id('dsend').submit();
+      console.log('[SENDDONE]');
+    } catch (e) { console.log('[SENDMSG POSTFAIL]'); }
+  } else { console.log('[SENDMSG NOTREADY]'); }
+}
+var dimage = undefined;
+function recvmsg(e) {
+  console.log('[RECVSTART]');
+  var d = e.data; // from e.source window
+  try {
+    var jd = JSON.parse(d);
+    var cobj = id('fcanvas');
+    var ctxt = cobj.getContext('2d');
+    if (dimage === undefined)
+      { dimage = ctxt.createImageData(1920, 1080); }
+    var dimg = dimage; // reused ctxt.createImageData(1920, 1080);
+    var data = window.atob(jd.data);
+    var transparentpixel = { r: 255, g: 0, b: 255, a: 0 };
+    var datai = 0;
+    var pixelmax = 1920 * 1080;
+    var pixelbytei = 0;
+    var pixelbytemax = pixelmax * 4;
+    var paletteitems = []; // add each index as it appears
+    var palettenumitems = 0;
+    transparentpixel.r = data.charCodeAt(datai); ++datai;
+    transparentpixel.g = data.charCodeAt(datai); ++datai;
+    transparentpixel.b = data.charCodeAt(datai); ++datai;
+    transparentpixel.a = data.charCodeAt(datai); ++datai;
+    if (transparentpixel.a) {
+      console.log("extra instructions not yet expected");
+      return;
+    } else { console.log("[DECOMPRESS]"); }
+    var thispixel = { r: 0, g: 0, b: 0, a: 0 };
+    var palettemode = 0;
+    var toggletoggle = 0;
+    var paletteindex = -1;
+    while (datai < data.length) {
+      thispixel.r = data.charCodeAt(datai); ++datai;
+      if (palettemode) { // indexed colour (or toggle[-toggle])
+        if (thispixel.r == transparentpixel.r || toggletoggle == 2) {
+          thispixel.g = data.charCodeAt(datai); ++datai;
+          thispixel.b = data.charCodeAt(datai); ++datai;
+          thispixel.a = data.charCodeAt(datai); ++datai;
+          paletteindex = thispixel.r;  // trigger index
+        } else { paletteindex = thispixel.r; } // value
+      } else { // non-indexed colour
+        thispixel.g = data.charCodeAt(datai); ++datai;
+        thispixel.b = data.charCodeAt(datai); ++datai;
+        thispixel.a = data.charCodeAt(datai); ++datai;
+        paletteindex = -1;
+      }
+      if (thispixel.r == transparentpixel.r &&
+          thispixel.g == transparentpixel.g &&
+          thispixel.b == transparentpixel.b) {
+        if (thispixel.a == 0) { // end of image marker !
+          if (pixelbytei == pixelbytemax) {
+            console.log("[SUCCESS! FULL IMAGE WRITTEN!]\n");
+            var bytesread = data.length;
+            var byteswritten = pixelbytemax;
+            var compressionpct = (100.0 * (byteswritten - bytesread)) / byteswritten;
+//            console.log('Compression was ' + compressionpct + '%');
+            break;
+          } else {
+            var missingpixels = (pixelbytemax - pixelbytei) / 4;
+            console.log('[' + missingpixels + ' missing pixels in compressed image]');
+            break;
+          }
+        } else { // pixel repeat marker ! or palette toggle !
+          var countvalue = thispixel.a;
+          if (thispixel.a == 255) { // palette instruction
+            palettemode = !palettemode;
+            if (toggletoggle == 1) {
+              if (palettemode) { // toggle-toggle off-on
+                toggletoggle = 2; // next colour is next palette colour
+              } else { // toggle-toggle on-off (anticipate ^_^ on-off-on)
+                toggletoggle = 2; // mode is off, expecting another toggle
+              }
+            } else if (toggletoggle == 2) {
+              if (!palettemode) { // expecting on-off-(on), not off-on-(off)
+                console.log('[cannot disable palette mode + add colour]');
+                // toggle-toggle-toggle-toggle would reach here (tt still 2)
+              } else {
+                toggletoggle = 2; // on-off-on -> same forward state as off-on
+              } // toggle-toggle-toggle-toggle-toggle reaches here 3 times
+            } else { toggletoggle = 1; } // anticipate second toggle
+            countvalue = 0; // no repeats in toggle
+          } else if (thispixel.a == 254) { // extra counter exists
+            var secondbyte = data.charCodeAt(datai); ++datai;
+            if (secondbyte >= 128) { // extra bits in next byte
+              secondbyte -= 128;  // remove flag from number
+              var thirdbyte = data.charCodeAt(datai); ++datai;
+              if (thirdbyte >= 128) { // extra bites in next byte
+                thirdbyte -= 128;  // remove flag from number
+                var fourthbyte = data.charCodeAt(datai); ++datai; // up to 4 bytes
+                if (fourthbyte >= 128) {
+                  console.log("more than 4 bytes!!");
+                  break;
+                } else { countvalue += (fourthbyte << 14) + (thirdbyte << 7) + secondbyte; }
+              } else { countvalue += (thirdbyte << 7) + secondbyte; }
+            } else { countvalue += secondbyte; } // add this many
+          }
+          while (--countvalue >= 0) {
+            dimg.data[pixelbytei + 0] = dimg.data[pixelbytei - 4];
+            dimg.data[pixelbytei + 1] = dimg.data[pixelbytei - 3];
+            dimg.data[pixelbytei + 2] = dimg.data[pixelbytei - 2];
+            dimg.data[pixelbytei + 3] = dimg.data[pixelbytei - 1];
+            pixelbytei += 4;
+          }
+        }
+      } else {
+        if (toggletoggle == 1) { // this is a toggle, no write
+          // console.log('[TOGGLE]');
+        } else if (toggletoggle == 2) { // add colour to palette
+          if (!palettemode)
+            { console.log('[palette mode expected for toggletoggle 2]'); }
+          if (palettenumitems < transparentpixel.r)
+            { paletteindex = palettenumitems; }
+          else { paletteindex = palettenumitems + 1; }
+          var newcolour = { r: thispixel.r, g: thispixel.g, b: thispixel.b, a: thispixel.a };
+          paletteitems[paletteindex] = newcolour;
+          palettenumitems++;
+          toggletoggle = 0;
+          dimg.data[pixelbytei] = thispixel.r; ++pixelbytei;
+          dimg.data[pixelbytei] = thispixel.g; ++pixelbytei;
+          dimg.data[pixelbytei] = thispixel.b; ++pixelbytei;
+          dimg.data[pixelbytei] = thispixel.a; ++pixelbytei;
+        } else if (palettemode) {
+          if (paletteindex == -1) {
+            console.log('[colour in palette mode not expected]');
+            thispixel = { r: 0, g: 255, b: 0, a: 200 };   // cyan
+          } else if (paletteindex < transparentpixel.r &&
+                     paletteindex >= palettenumitems) {
+            console.log('[unmapped low index palette item]');
+            thispixel = { r: 255, g: 0, b: 0, a: 200 };   // red
+          } else if (paletteindex == transparentpixel.r) {
+            console.log('[palette trigger index byte not expected]');
+            thispixel = { r: 255, g: 255, b: 0, a: 200 }; // yellow
+          } else if (paletteindex > transparentpixel.r &&
+                     paletteindex > palettenumitems) {
+            console.log('[unmapped high index palette item]');
+            thispixel = { r: 0, g: 0, b: 255, a: 200 };   // blue
+          } else { // valid palette index
+            thispixel.r = paletteitems[paletteindex].r;
+            thispixel.g = paletteitems[paletteindex].g;
+            thispixel.b = paletteitems[paletteindex].b;
+            thispixel.a = paletteitems[paletteindex].a;
+            dimg.data[pixelbytei] = thispixel.r; ++pixelbytei;
+            dimg.data[pixelbytei] = thispixel.g; ++pixelbytei;
+            dimg.data[pixelbytei] = thispixel.b; ++pixelbytei;
+            dimg.data[pixelbytei] = thispixel.a; ++pixelbytei;
+          } // end of palette mode handling
+        } else { // non-palette mode -> normal colour
+          dimg.data[pixelbytei] = thispixel.r; ++pixelbytei;
+          dimg.data[pixelbytei] = thispixel.g; ++pixelbytei;
+          dimg.data[pixelbytei] = thispixel.b; ++pixelbytei;
+          dimg.data[pixelbytei] = thispixel.a; ++pixelbytei;
+        }
+      } // ^ backwards apparently ... ? note first pixel will need to flip too
+    } // breaks when finished writing
+    ctxt.putImageData(dimg, 0, 0);
+    console.log('[PALETTE ITEMS: ' + palettenumitems + ']');
+    id('dcode').value = jd.code;
+//   need to rotate code in accordance with received time
+//    console.log('message received');
+//    id('send').style.border = '#0f0 solid 1px';
+    id('dframe').disabled = false;
+    console.log('[RECVDONE]');
+//    if (sendmsgloop) { sendmsg(); } // not recursive because sendmsg pends
+    // error 500 .... trying with timer instead
+  } catch (e) {
+    console.log('parse failed');
+    console.log(e);
+  }
+}
+/*
+function recvok(el) {
+  console.log('message received');
+  id('send').style.border = '#0f0 solid 1px';
+  id('dframe').disabled = false;
+  if (sendmsgloop) { sendmsg(); } // not recursive because sendmsg pends
+}
+*/
+function recverr(el) {
+  console.log('message failed');
+  id('send').style.border = '#f00 solid 1px';
+  id('dframe').disabled = false;
+}
+function recveof(el) {
+  console.log('message aborted');
+  id('send').style.border = '#fc3 solid 1px';
+  id('dframe').disabled = false;
+}
+
+var mouseenabled = false;
+function startmouse() {
+  mouseenabled = true;
+  clearm1();
+}
+function stopmouse() {
+  mouseenabled = false;
+  emptym1();
+}
+function togglemouse() {
+  if (mouseenabled == true) {
+    stopmouse();
+  } else { startmouse(); }
+}
+function movemouse(e, el) {
+  var lm = id('lmouse');
+  var lm1k = id('lm1key');
+  var lm1v = id('lm1val');
+  var x = e.clientX;
+  var y = e.clientY;
+  lm.value = x + ',' + y;
+  if (lm1k.value != '') {
+    if (lm1k.value == '0')
+      { lm1v.value = x + ',' + y; }
+    else { lm1v.value += '+' + x + ',' + y; }
+    lm1k.value = parseInt(lm1k.value) + 1;
+  } // else m1 disabled
+}
+var localenabled = false;
+var localbusy = false;
+var localtimer = 1000;
+var localinterval = undefined;
+var localoptions = {
+  enableHighAccuracy: true,
+  timeout: 3000,
+  maximumAge: 0
+};
+function movelocal(p) {
+  var lm2k = id('lm2key');
+  var lm2v = id('lm2val');
+  var y = p.coords.latitude;
+  var x = p.coords.longitude;
+  var r = p.coords.accuracy;
+  if (lm2k.value != '') {
+    if (lm2k.value == '0')
+      { lm2v.value = x + ',' + y + ',' + r; }
+    else { lm2v.value += '+' + x + ',' + y + ',' + r; }
+// consider tagging each with time =TAG ?
+// yyyy.mm.dd.hh.mm.ss   .ss  .mm.ss .58 .59 .02.00
+    lm2k.value = parseInt(lm2k.value) + 1;
+  } // else m2 disabled
+  localbusy = false;
+//  if (localenabled == true) getlocal ... recursive ...
+}
+function getlocal() {
+  if (localbusy == false) {
+    if (localenabled == true) {
+      localbusy = true;
+      try {
+        var geo = navigator.geolocation;
+        geo.getCurrentPosition(movelocal, movelocalerr, localoptions);
+      } catch (e) {
+        console.log('getlocal failed');
+      }
+    } else { console.log('getlocal disabled'); }
+  } else { console.log('getlocal busy'); }
+}
+function startlocal() {
+  localenabled = true;
+  clearm2(); // ready for new values
+  if (localinterval !== undefined) {
+    clearInterval(localinterval);
+    console.log('previous interval cleared');
+  }
+  localinterval = setInterval(getlocal, localtimer);
+  getlocal(); // don't wait an interval for first request
+  console.log('local started');
+}
+function stoplocal() {
+  localenabled = false;
+  if (localinterval !== undefined) {
+    clearInterval(localinterval);
+    localinterval = undefined;
+    console.log('active interval cleared');
+  }
+  // could stop/clear m2 ... will clear on start tho
+  console.log('local stopped');
+}
+function togglelocal() {
+  if (localenabled == true) {
+    stoplocal();
+  } else { startlocal(); }
+}
+
+// -- INPUT --
+function presskey(e, el) {
+  var keyvalue = '';
+  if (e.keyCode) { // most keys ... // (!e.key) { // if e.key is not given, set it
+    if (     e.keyCode ==  13) { keyvalue = '\\n';     }
+    else if (e.keyCode ==   8) { keyvalue = '\\b';     }
+    else if (e.keyCode ==   9) { keyvalue = '\\t';     }
+    else if (e.keyCode ==  27) { keyvalue = '\\e';     }
+    else if (e.keyCode ==  37) { keyvalue = '\\L';     }
+    else if (e.keyCode ==  38) { keyvalue = '\\U';     }
+    else if (e.keyCode ==  39) { keyvalue = '\\R';     }
+    else if (e.keyCode ==  40) { keyvalue = '\\D';     }
+    else if (e.keyCode == 220) { keyvalue = '\\';      }
+    else if (e.keyCode == 192) { keyvalue = '`';      }
+    else if (e.keyCode == 189) { keyvalue = '-';      }
+    else if (e.keyCode == 187) { keyvalue = '=';      }
+    else if (e.keyCode == 219) { keyvalue = '[';      }
+    else if (e.keyCode == 221) { keyvalue = ']';      }
+    else if (e.keyCode ==  32) { keyvalue = ' ';      }
+    else if (e.keyCode >= 48 && e.keyCode <= 57) {
+      keyvalue = String.fromCharCode(e.keyCode); // numbers
+    } else if (e.keyCode >= 65 && e.keyCode <= 90) { // any letter keys
+      if (e.keyCode >= 65 && e.keyCode <= 90 && e.shiftKey == false) {
+        keyvalue = String.fromCharCode(e.keyCode + (97 - 65));
+      } else {
+        keyvalue = String.fromCharCode(e.keyCode); // uppercase
+      }
+    } else { console.log('UNMAPPED KEYCODE ' + e.keyCode); console.log(e); }
+  } else if (e.key) {
+    if (     e.key.length == 1) { keyvalue = e.key; } // any "normal" keys
+    else if (e.key == 'Left'  || e.key == 'ArrowLeft' ) { keyvalue = '\\L'; }
+    else if (e.key == 'Up'    || e.key == 'ArrowUp'   ) { keyvalue = '\\U'; }
+    else if (e.key == 'Right' || e.key == 'ArrowRight') { keyvalue = '\\R'; }
+    else if (e.key == 'Down'  || e.key == 'ArrowDown' ) { keyvalue = '\\D'; }
+    else if (e.key == 'Esc'   || e.key == 'Escape'    ) { keyvalue = '\\e'; }
+    else if (e.key == 'Tab'                           ) { keyvalue = '\\t'; }
+    else if (e.key == 'Backspace'                     ) { keyvalue = '\\b'; }
+    else if (e.key == 'Enter'                         ) { keyvalue = '\\n'; }
+  } else { console.log('no e.key'); console.log(e); }
+  if (keyvalue != '') {
+    if (e.key == '' && e.ctrlKey == true) {
+      console.log('control code detected');
+      // e.keyCode == 12 -> ctrl+L -> address bar
+    } else if (keyvalue.length == 1) {
+      if (keyvalue == '`') {
+console.log('KEYVALUESENDMSG');
+        sendmsg(); // ignore key and submit on graave `
+      } else if (keyvalue == '-') {
+        togglemouse();
+      } else if (keyvalue == '=') {
+        togglelocal();
+      } else if (keyvalue == '\\') {
+        sendmsg();
+      } else {
+        id('lkey').value += keyvalue;
+//        if (e.key == ' ')
+//          { sendmsg(); } // submit on every space..
+        if (keyvalue == ' ' || keyvalue == ']')
+          { sendmsg(); } // submit on every space..
+      }
+    } else if (keyvalue.length > 1) {
+//      if (e.key == 'Enter' || e.key == '\\n') {
+//        { sendmsg(); } // submit on every enter
+//      } else
+      if (keyvalue == '\\e') {
+//        mousemapindex = -1;
+//        mousemapcount = 0;
+//        id('lmouse0').value = '';
+//        id('lmouse1').value = ''; // clears non-relevant map data - note that sendmsg() does not
+// some other key should send relevant map data .. maybe Shift + Esc
+            // ^ there could be more than one
+        id('lmvkey').value = '2'; // nvars will be passed to key on submit
+        var mvars = 'SCREEN.W=' + document.body.clientWidth;
+        mvars += ';SCREEN.H=' + document.body.clientHeight;
+        id('lmvars').value = mvars; // cannot add mousepos prefix because not part of event? check ..
+// later: prefix wuth lastmousex and lastmousey
+//console.log('-nomap-');
+//console.log(mvars);
+//console.log(e);
+//console.log('-------');
+        sendmsg();
+      } else if (keyvalue == '\\t') {
+        if (e.shiftKey == false) {
+          togglevisible(id('send'));          
+        } else {
+          window.location.reload(true);
+        }
+//        e.cancelBubble = true;
+        e.stopPropagation(); // stop address bar focus (nope, return false)
+      } else if (keyvalue == '\\n') {
+        id('lkey').value += '\\n';
+        sendmsg();
+      } else if (keyvalue == '\\b') {
+        id('lkey').value += '\\b';
+        sendmsg();
+      } else if (keyvalue == '\\U' || keyvalue == '\\D' ||
+                 keyvalue == '\\L' || keyvalue == '\\R') {
+        id('lkey').value += keyvalue;
+        sendmsg();
+      } else if (e.key == 'Control') {
+        console.log('control key pressed');
+      } else if (e.key == 'Alt') {
+        console.log('alt key pressed');
+      } else if (e.key == 'Shift') {
+        console.log('shift key pressed');
+      } else {
+//        id('lkey').value += '[' + e.key + ']';
+        console.log('ignored key [' + e.key + ']');
+      }
+    } else {
+      console.log('no keyvalue');
+      console.log(e);
+    }
+  } else {
+    console.log('no e.key');
+    console.log(e);
+  }
+}
+function clickmouse(e, el) {
+  if (e === undefined) {
+    if (sendmsgtimer) {
+      clearInterval(sendmsgtimer);
+      sendmsgtimer = undefined;
+    } else {
+      sendmsgtimer = setInterval(sendmsg, sendmsgdelay); // attempt a request, delay is max fps!
+    }
+    e = { eventPhase: 3 }; // continue with existing trigger, interval is for animation
+  } else { sendmsgloop = false; }
+  if (e.eventPhase == 3) {
+    console.log('triggering mouseclick for eventPhase 3');
+    id('lkey').value += ''; // no keypress value for now
+//    id('lclick').value = 1;
+    sendmsg(); // get new frame on click
+  } else if (e.eventPhase == 2) {
+    console.log('ignoring eventPhase 2');
+    console.log(e);
+  } else {
+    console.log('unexpected eventPhase ' + e.eventPhase);
+    console.log(e);
+  }
+}
+
+//function imgfailed() {
+//  // probably only if data is bad
+//  setfailed(id('overlay'));
+//}
+//function imgstopped() {
+//  // probably not possible - need separate trigger
+//  setstopped(id('overlay'));
+//}
+//function imgloaded() {
+//  setinvisible(id('overlay'));
+//}
+
+  </script>
+</head><body
+          onkeypress="return false;"
+          onkeydown="presskey(event, this); return false;"
+          onkeyup="return false;"
+          onclick="clickmouse(event, this); return false;"
+          ondblclick="clickmouse(undefined, this); return false;"
+          onmousemove="movemouse(event, this); return false;">
+  <div id="title">TEST-Run-Length-Encoding</div>
+  <div id="view">
+    <canvas id="fcanvas" width="1920" height="1080"
+       style="zoom: 0.5;"
+       onclick="clickmouse(event, this); return false;"></canvas>
+  </div>
+  <div id="send" class="visible">
+    <div id="log">
+      <div id="dlog">
+        <input id="lkey"   style="width: 150px;" type="text" value="" />
+        <input id="lmouse" style="width: 150px;" type="text" value="" /><br />
+        <input id="lmvkey" style="width:  25px;" type="text" value="" />
+        <input id="lmvars" style="width: 275px;" type="text" value="" /><br />
+        <input id="lm1key" style="width:  30px;" type="text" value="" />
+        <input id="lm1val" style="width: 270px;" type="text" value="" /><br />
+        <input id="lm2key" style="width:  30px;" type="text" value="" />
+        <input id="lm2val" style="width: 270px;" type="text" value="" />
+      </div>
+      <form id="dsend" action="" method="post" target="serv">
+        <input id="dcode"  style="width: 150px;" type="text" name="c" value="" />
+        <input id="dname"  style="width: 150px;" type="text" name="n" value="wx" /><br />
+        <input id="dkey"   style="width: 150px;" type="text" name="k" value="" />
+        <input id="dmouse" style="width: 150px;" type="text" name="m" value="" />
+        <input id="dframe" style="width:  50px;" type="button" value="k" onclick="sendmsg();" />
+        <input id="dframes" style="width:  50px;" type="button" value="L" onclick="clickmouse(undefined, this);" />
+      </form>
+    </div>
+    <div id="recv">
+      <iframe id="drecv" name="serv" width="100%" src=""></iframe>
+<!--         onerror="recverr(this);" onabort="recveof(this);" onload="recvok(this);"></iframe>   -->
+    </div>
+  </div>
+  <script type="text/javascript">
+//    var view = id('fview');
+//    var drecv = id('drecv');
+//    drecv.addEventListener('load', function() { recv(drecv); });
+//    drecv.addEventListener('error', function() { failed(drecv); });
+// should still detect load and error ... fail on bad receive instead of waiting
+    window.addEventListener('message', function(e) { recvmsg(e); });
+    var dsend = id('dsend');
+    var srcurl = document.location.href.substr(7);
+    var srchost = srcurl.substr(0, srcurl.indexOf('/'));
+    dsend.action = 'http://' + srchost + '/io/testrle?' + ((Math.random() * 1000000) + Math.random());
+    id('dcode').value = clientime();
+    emptym1();
+    emptym2();
+//    sendmsg();
+// or Math.random() * 1000000 + Math.random();
+//... sendfirstaction(); to begin
+
+
+//    imgloadframe();
+  </script>
+</body></html>
