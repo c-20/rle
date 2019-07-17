@@ -31,7 +31,7 @@ If byte 3 is 0x80 or above (128 or more), an extra byte is expected.
 
 If byte 4 is 0x80 or above (128 or more), an error is triggered. Todo: support any length; massive canvases.
 
-Total repeats of the last pixel to create = 254 + [(byte4 << 14) + [(byte3 << 7)]] + byte2; (without 0x80 flags)
+Total repeats of the last pixel to create = nn OR 254 + [[(byte4 << 14) +] (byte3 << 7)] + byte2; (without 0x80 flags)
 
 todo: multi-byte palette indexes
 
@@ -47,7 +47,7 @@ local network wireless mobile web client  0.36fps
 
 8MB raw to approx 60KB compressed
 
-The binary may work if you have a Broadcom GPU, Freetype2 and libpng installed
+The binary may work if you have a Broadcom GPU and Freetype2 installed
 
 Run ./shell -testrle on the server to start the sender
 
