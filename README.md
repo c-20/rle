@@ -21,7 +21,9 @@ Add to palette adds the next item index. First index is 0, last is FE
 
 If trigger byte is AA instead of FF, first is 0, last is FF and AA will be empty
 
-Trigger byte is the red byte of the colours being read.
+Trigger byte is the red byte of the colours being read, causes GBA bytes to be read.
+
+RGBA will also be read if palette mode is off. Otherwise, each byte is an index unless repeat or toggle is triggered.
 
 For nn = 1-254, this indicates a repeat. If 254 repeats, an extra byte is expected.
 
@@ -31,7 +33,7 @@ If byte 3 is 0x80 or above (128 or more), an extra byte is expected.
 
 If byte 4 is 0x80 or above (128 or more), an error is triggered. Todo: support any length; massive canvases.
 
-Total repeats of the last pixel to create = nn OR 254 + [[(byte4 << 14) +] (byte3 << 7)] + byte2; (without 0x80 flags)
+Total repeats of the last pixel to create = nn OR 254 + [[(byte4 << 14) +] (byte3 << 7) +] byte2; (without 0x80 flags)
 
 todo: multi-byte palette indexes
 
