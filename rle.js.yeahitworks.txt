@@ -1,0 +1,962 @@
+// -- DEFAULT OPACITY -------------------------------------------------------
+var defaultalpha = 250; // default to 250 opacity
+var sendcolour = false; // true for rgb, false for grey
+var sendalpha = false; // true for rgba, false for rgb
+// false and true will break things
+
+function hexsection(buffer, index, before, after) {
+  var start = index + before; // expect negative!
+  if (start < 0) { start = 0; }
+  var stop = index + after;
+  if (stop >= buffer.length) { stop = buffer.length - 1; }
+  var out   = '';
+  var ix = start - 1;
+  while (++ix <= stop) {
+    if (ix == index) { out = out.concat('-'); }
+
+    var next = Number(buffer[ix]).toString(16).padStart(2, '0');
+//byte.charAt(0).toString(16).padStart(2, '0')
+
+    out = out.concat(next);
+
+    if (ix == index) { out = out.concat('-'); }
+  }
+  return out;
+}
+
+// -- DEFAULT PALETTE -------------------------------------------------------
+function defaultpalette() {
+  var palettelength   = (255 << 8) + 255 + 1; // length is FFFF+1(65536)
+  var palettergbalen  = palettelength * 4;    // palette stores rgba
+  var paletteitems    = new Uint8ClampedArray(palettergbalen);
+  var palettenumitems = 1; // 00 0000 (0, 0) is the prefix for paletteaddress mode
+  paletteitems[0] = paletteitems[1] = paletteitems[3] = 0xFF; // unaddressable yellow
+  var palettemaxindex = 0xFEFF; // FF00-FFFF are reserved for n,n,n,a 0-255 defaultalpha
+  var black = 0xFF00, white = 0xFFFF;
+  var greyindex = black;
+  while (greyindex <= white) {
+    var thgix = greyindex * 4;
+    paletteitems[thgix + 0] = greyindex % 256;
+    paletteitems[thgix + 1] = greyindex % 256;
+    paletteitems[thgix + 2] = greyindex % 256;
+    paletteitems[thgix + 3] = defaultalpha;
+    greyindex++; // note these are not added to the palettenumitems counter !
+  } // pre-add greys as top of two-byte range (grey/rgb, ababab -> 00FFab; rgba, abababFF -> 00FFab)
+  return { items: paletteitems, numitems: palettenumitems, length: palettelength,
+           maxindex: palettemaxindex, rgbalen: palettergbalen, black: black, white: white };
+}
+
+var encpitems = null;
+var repeats = [];
+var repeatsin = [];
+function compressbitmap(imagedata) { // , imagelength) {
+  var inputspan    = 4;
+  var inputwidth   = imagedata.width;
+  var inputheight  = imagedata.height;
+  var inputrgbalen = inputwidth * inputheight * inputspan;
+  var inputdata    = imagedata.data;
+  var outputlen    = inputrgbalen; // max compression = 0%
+  var outputspan   = (sendcolour) ? 3 : 1;
+  // transparent pixel colour set as first unused colour magenta to white
+  // set default = red   SOI = no transparency, grey
+  // set default = white SOI = no transparency, rgb
+  outputlen += 10 + 4; // SOI and EOI are rgba for grey mode and for rgb mode
+  // anything else means transparency enabled and alpha 0 should be included!
+  var imagecode = new Uint8ClampedArray(outputlen);
+  var alphagreen = (sendalpha) ? 0xEE : (sendcolour) ? 0xFF : 0x00; // to differentiate!
+  imagecode[0] = (sendcolour) ? 255 : 255;  // always use red FF to avoid 0-index gap
+  imagecode[1] = alphagreen;                // 255 is also toggle but only in alpha
+  imagecode[2] = (sendcolour) ? 255 :   0;  // 0,0 for grey not used! 255,255 for rgb !
+  // see decoder for where imagecode[1] and [2] are 00 to FE but not both 00
+  imagecode[3] = 0; // 0 alpha value for SOI and EOI marker! TODO: SOI extra info
+  imagecode[4] = 0; // indicate size is two bytes instead of one (max 65K)
+  imagecode[5] = Math.trunc(inputwidth / 256); // might be 0! does not indicate 3-byte!
+  imagecode[6] = inputwidth % 256;
+  imagecode[7] = Math.trunc(inputheight / 256); // might be 0
+  imagecode[8] = inputheight % 256;
+  imagecode[9] = 0;                             // alignment 0
+
+//  // currently, this is rgb mode. first thing to do is enable palettemode.
+//  imagecode[10] = imagecode[11] = imagecode[12] = 0xFF;
+//  imagecode[13] = 0xFF; // toggle palette mode from off to on
+//  // ^ this should happen in below code .. palettemode starts at 0
+
+  // need same default palette as decoder
+  // -- MODE SWITCHES ---------------------------------------------------------
+  var modenumswitches = 254; // there is no mode FF, because FF is toggle redbyte
+  var modeenabled = new Uint8ClampedArray(modenumswitches + 1); // include mode 0
+  var palette = defaultpalette(); // (FF00-FFFF = grey, alpha%) (00 = white, 0%, unaddressable)
+  var unpalettedpixels = 0;
+  var palettemode = 0;
+  var repeatcount = 0;
+//  var lastpaletteindex = 0; // palette mode is on after SOI, so, refer to colour 0
+  var lastpaletteindex = -1; // no, it is off until it is on!
+  // grey, rgb and rgba all match colours in all four channels !
+  var inputix = 0;
+  var outputix = 10, outputmax = outputlen - 4; // after SOI
+//  while (outputix < outputmax) {
+  // wait ... that's not right at all
+  while (inputix < inputrgbalen) {
+    if (outputix >= outputmax) { break; } // imagecode overflow !
+    var writepixel = 1; // yes, unless no
+    var pixelmatch = false;
+    if (lastpaletteindex >= 0) { // this is set to -1 after any unpaletted pixel
+      if (lastpaletteindex == 0) { console.log('paletteindex 0 is unaddressable'); break; }
+      var lapix = lastpaletteindex * 4; // palette colours are 4-byte
+      var laredmatch   = (inputdata[inputix + 0] == palette.items[lapix + 0]);
+      var lagreenmatch = (inputdata[inputix + 1] == palette.items[lapix + 1]);
+      var labluematch  = (inputdata[inputix + 2] == palette.items[lapix + 2]);
+      var laalphamatch = false;   // later pixels match as default alpha!
+      var palettealpha = palette.items[lapix + 3]; // get palette alpha
+      if (palettealpha == defaultalpha) { // colour was stored as rgb
+        laalphamatch = true; // do not check alpha; rgb check only (true means ignore)
+      } else { // colour was stored with alpha, so check alpha channel
+        laalphamatch = (inputdata[inputix + 3] == palette.items[lapix + 3]);
+      } // remember that grey and rgb can (optionally) remember alpha!
+      pixelmatch = (laredmatch && lagreenmatch && labluematch && laalphamatch);
+    } // end of pixelmatch check -- used to decide if repeatcount can be used
+    var lastpixel = (inputix == inputrgbalen - 4); // only if aligned!
+    if (pixelmatch && !lastpixel) { // start or continue repeating this pixel
+      repeatcount++;  // increment count
+      writepixel = 0; // don't write because counting
+    } else { // pixel didn't match! write repeats! clear lastpaletteindex!
+      if (repeatcount > 0) { // endrepeat (even if pixelmatch is true, if lastpixel is true)
+        // -- FIRST SEND THE RGB/GREY/RGBA TRIGGER SEQUENCE ----------------------------
+        imagecode[outputix++] = imagecode[0]; // rgb  has FFFFFF trigger
+        if (sendcolour) {
+          imagecode[outputix++] = imagecode[1]; // grey has FF     trigger
+          imagecode[outputix++] = imagecode[2]; // rgba has FFnnmm trigger (nn,mm !0)
+        }
+        // -- THEN SEND A REPEAT-COUNTED BYTE WITH OFFSET 254 IF >= 254!!! --------
+        if (repeatcount < 0xFE) { // a 0 would end the image!
+repeats.push('[' + (0 - repeatcount) + ']');
+          imagecode[outputix++] = repeatcount; // single byte 1-253
+        } else { // 254+ .. send 0 or more
+repeats.push('[' + repeatcount + ']');
+          imagecode[outputix++] = 0xFE;
+          repeatcount -= 254;
+          while (repeatcount >= 128) {
+            imagecode[outputix++] = (repeatcount & 0x7F) + 0x80;
+            repeatcount >>= 7;
+          }
+          imagecode[outputix++] = repeatcount;
+        } // end of repeater packet
+        repeatcount = 0;
+        lastpaletteindex = -1; // this will be set again later if it matches a new index
+        writepixel = (lastpixel) ? (!pixelmatch) : 0; // writepixel = !pixelmatch
+      } // else writepixel stays 1. end of writerepeats!
+    } // pixelmatch was true, or if it was false (or last pixel) repeats were written out
+    if (writepixel) { // reach here if pixelmatch was false ! and if not the last pixel ............
+      // if this pixel is in the palette, use the palette index ...
+      //   otherwise toggle x2 so it can be added
+      // can only add if palette mode is enabled, so toggle x3 maybe
+      // UNLESS too many in palette, then just write colour
+      var paletteindex = -257; // -256 = black, -1 = white; 100% opacity
+      while (++paletteindex < palette.numitems) { // no gap!
+        if (paletteindex == 0) { continue; } // skip unaddressable 0 !
+        var palix = paletteindex; // all palette indices are positive
+        if (palix < 0) { // offset grey from (-256 to -1) to (65280 to 65535)
+          palix += 0xFFFF + 1; // offset by FFFF+1+(-256to-1) -> FF00-FFFF
+        } // (FF00 - FFFF), then (0 to palettenumitems-1)
+        var thpix = palix * 4; // palette colours are 4-byte
+        var palettematch = false; // all palette colours are rgba now !
+        var redmatch   = (inputdata[inputix + 0] == palette.items[thpix + 0]);
+        var greenmatch = (inputdata[inputix + 1] == palette.items[thpix + 1]);
+        var bluematch  = (inputdata[inputix + 2] == palette.items[thpix + 2]);
+        var alphamatch = false;   // but later pixels match as default alpha!
+        var palettealpha = palette.items[thpix + 3]; // get palette alpha
+        if (palettealpha == defaultalpha) { // colour was stored as rgb
+          alphamatch = true; // do not check alpha; rgb check only
+//        } else if (palettealpha == 255) { alphamatch = true; } // greys as defaultalpha now
+        } else { // colour was stored with alpha, so check alpha channel
+          alphamatch = (inputdata[inputix + 3] == palette.items[thpix + 3]);
+        } // remember that grey and rgb can (optionally) remember alpha!
+        palettematch = (redmatch && greenmatch && bluematch && alphamatch);
+        if (palettematch) { // rgba palette match even for grey mode !
+          // -- SPECIAL GREY MATCH HANDLING -------------------------------------------
+          if (paletteindex >= palette.maxindex) {
+            console.log('palette is full!');
+            break; // don't expect for now
+          } else if (palix >= palette.black) { paletteindex = palix; }
+          // -- TOGGLE INTO PALETTE MODE IF NOT IN PALETTE MODE -----------------------
+          if (!palettemode) { // palette mode is off! lastpaletteindex is surely -1!
+            palettemode = !palettemode; // -> on (true)
+            imagecode[outputix++] = imagecode[0]; // FF[FF]     grey
+            if (sendcolour) {
+              imagecode[outputix++] = imagecode[1]; // FFFFFF[FF] rgb
+              imagecode[outputix++] = imagecode[2]; // FFnnmm[FF] rgba
+            }
+            imagecode[outputix++] = 0xFF; // send a toggle
+//            console.log('palette toggled to on to write an index!');
+          } // palette mode enabled, ready to write an index value
+          // -- THEN SEND PALETTEINDEX, BECAUSE paletteitems[paletteindex] MATCHED -----
+          if (paletteindex <= 0) { // palette index should not be 0
+            console.log('paletteindex 0 unaddressable, triggers 2-byte paletteindex');
+            break; // why is this happening !
+            // 01 is black, 02 is white, at default opacity
+            // 00 00FF is valid paletteindex 255
+            // 00 FF00 is valid paletteindex black 100% opacity
+            // 00 FFFF is valid paletteindex white 100% opacity
+            // 00 0000 FF is singlebyte address 255 ... special paletteindex
+            // 00 0000 00-FD are low paletteaddress values
+            // 00 0000 FE indicates a multibyte paletteaddress
+            // thus there is no single-byte 255 address. use multibyte for 253+
+            // 00 0000 FE02 is multibyte 255
+            // 00 0000 FE01 is multibyte 254
+            // 00 0000 FE00 is multibyte 253
+            // 00 0000 FD   is singlebyte 253
+            // 00 0000 FC   is singlebyte 252
+            // 00 0000 FB   is singlebyte 251
+            // 00 0000 FA   is singlebyte 250
+            // 00 0000 F9   is singlebyte 249
+            // 00 0000 F0   is singlebyte 240
+            // 00 0000 EF   is singlebyte 239
+            // 00 00 FE is valid 254 2-byte paletteindex
+            // paletteaddress has minimum offset of 253
+            // 00 00 00 FE 02 is paletteaddress 255, paletteindex 0
+            // 00 00 00 FE 01 is paletteaddress 254, paletteindex 0
+            // 00 00 FD is 253 ... maximum low paletteindex
+            // 00 01 00 is 256 ... minimum high paletteindex
+            // paletteindex range is valid 1-65535 as 2-byte !
+            // paletteindex range is valid 1-254 as 1-byte   !
+            // 01-FE, FF is mode trigger, 00 is 2-byte trigger
+            // 00 0000 is paletteaddress mode trigger
+            // 00 FF 00 is black, full opacity
+            // 00 FF 7F is grey,  full opacity
+            // 00 FF FF is white, full opacity
+          } else if (paletteindex > 0xFE) { // 1-byte is maximum 254 -- don't send 1-byte 255
+            //console.log('2-byte match at ' + paletteindex + ', outputix is ' + outputix);
+repeats.push(0 - paletteindex);
+            // this is a match-push! consider also add-push!
+            imagecode[outputix++] = 0;
+            imagecode[outputix++] = paletteindex >> 8; // Math.trunc(paletteindex / 256);
+            imagecode[outputix++] = paletteindex & 0xFF; // 256;  // greys correct
+            // 255 sends as 00 00FF
+            if (paletteindex == 255) {
+              console.log('sent 255 as 2-byte!');
+            }
+          } else { // greys at full opacity should have matched 65280 to 65535 (00 FF 0-255)
+repeats.push(paletteindex);
+            // this is a match-push! consider also add-push!
+
+//console.log('1-byte match at ' + paletteindex + ', outputix is ' + outputix);
+
+            imagecode[outputix++] = paletteindex; // palix should be the same!
+
+
+
+//console.log('paletteindex ' + paletteindex + ' written');
+// where are the extras being added?
+
+          }
+          lastpaletteindex = paletteindex; // remember this pixel's palette colour for pixelmatch
+
+//console.log('lastpaletteindex: ' + lastpaletteindex);
+
+
+          writepixel = 0;    // the pixel has been written as an index of the palette
+          break;             // stop searching the palette
+        } // else this palette item does not match the current pixel colour
+      } // end of palette items search (3 items minimum; maximum index 2, 259 items including greys)
+
+
+    } // re-assess writepixel! (was ok nested i think)
+
+
+    if (paletteindex == palette.numitems && !writepixel) {
+      console.log('INVALID NOMATCH!'); // not expected
+      paletteindex = -1; // add to palete !
+      break; //  error checkkkkkkkkkkkkkkk
+    }
+// keeps adding to palette repeatedly because paletteindex == -1 meaning no match !
+//   but ..... no need to add because ................?
+
+    if (writepixel) { // paletteindex stops at palettenumitems, needs to be disabled (set to -1)
+      if (paletteindex == palette.numitems) { // search failed to match!
+        paletteindex = -1;     // set again at palettenumitems for adding!
+        lastpaletteindex = -1; // set again later once added!
+      } else {
+        // if writepixel was 1 then no wonder it searched for an index
+        console.log('expected a search fail or writepixel disable');
+        break; // this is a problem
+      }
+      // there was no palette match -- add colour to palette at new index
+
+      // writepixel is (still) 1! send by index after adding !
+      if (palette.numitems > palette.maxindex) { // palette is full (FF00 - FFFF not in count)
+// this should correlate to palette.maxindex !
+
+        console.log('full palette!');
+        // leave writepixel as 1! palettemode will be disabled below if not disabled here !
+        // if palette is full on lastpixel.. disable, write. after lastpixel, not possible
+        // explicitly disable here in case there are other reasons to not add to palette !
+        if (palettemode) {            // palette mode is on !
+          console.log('disabling palette mode due to full palette!');
+          palettemode = !palettemode; // from on to off !
+          // still write pixel below? yes ....
+          // it may become re-enabled if a later pixel has a match and writes as an index
+        } // else palettemode was disabled (not possible because of outer condition)
+        lastpaletteindex = -1; // in case it isn't ....
+        break; // stop ...
+      } else { // palette is not full, so addcolour
+        // -- TOGGLE INTO PALETTE MODE IF NOT IN PALETTE MODE -----------------------
+        if (!palettemode) { // palette mode is off!
+          console.log('enabling palette mode to add a colour!');
+          palettemode = !palettemode; // -> on (true)
+          imagecode[outputix++] = imagecode[0]; // FF     for grey
+          if (sendcolour) {
+            imagecode[outputix++] = imagecode[1]; // FFFFFF for rgb
+            imagecode[outputix++] = imagecode[2]; // FFnnmm for rgba
+          }
+          imagecode[outputix++] = 0xFF; // send a toggle (255)
+        } // palette mode enabled, ready to write an index value
+        // -- TOGGLE-TOGGLE TO ADD A COLOUR -----------------------------------------
+        lastpaletteindex = -1; // this will be updated again after the colour is sent
+        palettemode = !palettemode; // -> off (false)  ------\ PM /--------
+        palettemode = !palettemode; // -> on  (true)     PM   \--/  PM
+        imagecode[outputix++] = imagecode[0]; // FF for grey
+        if (sendcolour) {
+          imagecode[outputix++] = imagecode[1]; // FFFFFF for rgb
+          imagecode[outputix++] = imagecode[2]; // FFnnmm for rgba
+        }
+        imagecode[outputix++] = 0xFF;         // toggle-
+        imagecode[outputix++] = imagecode[0]; // FF for grey
+        if (sendcolour) {
+          imagecode[outputix++] = imagecode[1]; // FFFFFF for rgb
+          imagecode[outputix++] = imagecode[2]; // FFnnmm for rgba
+        }
+        imagecode[outputix++] = 0xFF;         // -toggle
+        // -- NOW SEND THE COLOUR --------------------------------------------------
+        // if it has an alpha channel, precede with 0xFF byte
+        // that means all rgba precede with 0xFF to send 4-byte every time
+        // that means rgb sends as 3-byte (with default alpha on decompress)
+        // that means grey sends as 3-byte (with default alpha on decompress)
+        //   that means colours can be added to grey mode
+        //   that means colours with alpha can be added to grey mode / rgb mode
+        var reasontosendalpha = false; // for example, for some reason
+        if (sendalpha || reasontosendalpha) {
+          if (reasontosendalpha) { // non-rgba mode needs 000000 prefix
+            imagecode[outputix++] = 0x00; // 0
+            imagecode[outputix++] = 0x00; // 0
+            imagecode[outputix++] = 0x00; // 0
+          } // colour with alpha in grey or rgb mode
+          imagecode[outputix++] = inputdata[inputix + 0]; // r
+          imagecode[outputix++] = inputdata[inputix + 1]; // g
+          imagecode[outputix++] = inputdata[inputix + 2]; // b
+          imagecode[outputix++] = inputdata[inputix + 3]; // a
+        } else { // send as 3-byte colour for grey/rgb mode (yes, colours in grey!)
+          imagecode[outputix++] = inputdata[inputix + 0]; // r
+          imagecode[outputix++] = inputdata[inputix + 1]; // g
+          imagecode[outputix++] = inputdata[inputix + 2]; // b
+        } // colour sent ... palettemode is on, ready for 1-byte index or FF redbyte trigger
+          // redbyte trigger is still relevant because.. in grey mode .. unpaletted colours are 1-byte
+          //  presumably this can mean something special for text ? assign ascii chars to unpaletteables
+        // still need to add the colour to the palette here!
+        paletteindex = palette.numitems;  // new palettematch index is the one just added
+        var thpix = paletteindex * 4;
+        palette.items[thpix + 0] = inputdata[inputix + 0];
+        palette.items[thpix + 1] = inputdata[inputix + 1]; // remember colours in grey mode
+        palette.items[thpix + 2] = inputdata[inputix + 2];
+        if (sendalpha || reasontosendalpha) { // if alpha was sent in code (for some reason)
+          palette.items[thpix + 3] = inputdata[inputix + 3]; // remember it (always if rgba)
+        } else { palette.items[thpix + 3] = defaultalpha; }  // or use default (ignore input alpha)
+        palette.numitems++; // palette now has 1 more item
+        if (paletteindex == 0) { console.log('not possible - paletteindex 0 unaddressable');     }
+        else if (paletteindex < 0) { console.log('unhandled paletteindex noindex!');             }
+        else if (paletteindex > 0xFFFF) { console.log('paletteindex is 1-byte or 2-byte only!'); }
+        else if (paletteindex > 0xFE) { // maximum 254 for 1-byte index -- don't send 1-byte 255
+          // this is add-push, consider also match-push!
+          imagecode[outputix++] = 0;    // 2-byte has 00 prefix (use 000000 for addressing!)
+          imagecode[outputix++] = paletteindex >> 8; // Math.trunc(paletteindex / 256);
+          imagecode[outputix++] = paletteindex & 0xFF; // % 256;
+//console.log('2-byte add at ' + paletteindex + ', outputix is ' + outputix);
+repeats.push(0 - paletteindex);
+
+//console.log('added 2-byte paletteindex ' + paletteindex);
+        } else { // send a 1-byte index if within 1-254 range
+
+//console.log('1-byte add at ' + paletteindex + ', outputix is ' + outputix);
+
+
+repeats.push(paletteindex);
+          // this is add-push, consider also match-push!
+          imagecode[outputix++] = paletteindex; // 1-byte index
+
+
+//console.log('added 1-byte paletteindex ' + paletteindex);
+
+        } // FF cannot be sent as 1-byte because of red FF trigger match!
+        lastpaletteindex = paletteindex; // remember this pixel's palette colour for pixelmatch
+        writepixel = 0;    // the pixel has been written as an index of the palette
+      } // either colour was added, or palettemode was disabled because the palette is full
+    } // writepixel 1 if palettemode disabled, 0 if not. (([toggle][add colour]index)|writepixel 1)
+    if (writepixel) { // here because writepixel is still true ! (no match, no add)
+      // if colour was added and written as index, writepixel was set to 0 afterwards
+      // if colour was found and written as index, writepixel was set to 0 afterwards
+      // if palettemode was disabled beforehand, it was enabled .. writepixel is 0
+      if (pixelmatch) { console.log('pixelmatch not expected!');      break; } // would repeat
+      if (lastpaletteindex != -1) { console.log('lastpaletteindex!'); break; } // should reset
+      // -- TOGGLE OUT OF PALETTE MODE IF IN PALETTE MODE --------------------------
+      if (palettemode) { // palette mode is on!
+        lastpaletteindex = -1; // disable pixel matching for upcoming pixels
+        console.log('palette late-toggled to off for colour write'); // warning !
+        // still need to check if it matches a different palette index !!!!!!!
+        //  if it did then it wrote an index and writepixel was set to false!!
+        //  if it matches at a different index then palettemode is re-enabled
+        palettemode = !palettemode; // -> off (false)
+        imagecode[outputix++] = imagecode[0]; // FF[FF] grey
+        if (sendcolour) {
+          imagecode[outputix++] = imagecode[1]; // FFFFFF[FF] rgb
+          imagecode[outputix++] = imagecode[2]; // FFnnFF[FF] rgba
+        }
+        imagecode[outputix++] = 0xFF; // send a toggle FFFFFF[FF] (FF[FF for grey)
+      } // palette mode disabled, ready to write a plain grey / rgb / rgba colour
+      // write 3-byte colour if rgb, 1-byte if grey, 4-byte if rgba
+      // that means grey currently just writes the red channel ! todo: green grey, blue grey
+      // rgba can send rgb, where defaultalpha will be used upon decompress
+      // there are no unpaletted repeats! FFFFFF[1-253,254] are mode switches if palette mode is off!
+      imagecode[outputix++] = inputdata[inputix + 0];     // red
+      // consider grey-uses-green mode, and grey-uses blue mode !! TODO !!
+      if (sendcolour) {  // in grey, send red. in rgb, send rgb
+        imagecode[outputix++] = inputdata[inputix + 1];   // green
+        imagecode[outputix++] = inputdata[inputix + 2];   // blue
+        if (sendalpha) { // rgba; in grey/rgb, alpha can be sent to palette only
+          imagecode[outputix++] = inputdata[inputix + 3]; // rgba alpha
+        }
+      }
+      unpalettedpixels++;
+      console.log('unpaletted pixels: ' + unpalettedpixels);
+      lastpaletteindex = -1;
+      writepixel = 0;
+    } // end of write unpaletted pixel
+    inputix += inputspan; // next input pixel
+  }
+  if (outputix > outputlen - 4) {
+    console.log('imagecode overflow!');
+    console.log('uses more space than uncompressed!');
+  } else if (outputix == outputlen - 4) {
+    console.log('imagecode full!');
+  } else { // EOI == SOI
+    imagecode[outputix++] = imagecode[0];
+    if (sendcolour) {
+      imagecode[outputix++] = imagecode[1];
+      imagecode[outputix++] = imagecode[2];
+    }
+    imagecode[outputix++] = 0;
+  } // 0 alpha value for EOI marker
+  var compressedlen = outputix;
+  var bytesread = inputrgbalen;
+  var byteswritten = compressedlen;
+  var compressionpct = (100 * (bytesread - byteswritten)) / bytesread;
+  console.log('bytes read: ' + bytesread);
+  console.log('bytes written: ' + byteswritten);
+  console.log('compression: ' + compressionpct + '%');
+  var truncedimagecode = imagecode.slice(0, compressedlen);
+// new Uint8ClampedArray(compressedlen)
+  // new Uint8ClampedArray(truncedimagecode)
+//  .set(imagecode, 0, compressedlen);
+
+//  truncedimagecode.transfer(imagecode, compressedlen);
+//imagecode, 0, compressedlen);
+  console.log('truncedlen: ' + truncedimagecode.length);
+  console.log('image size:       ' + inputwidth + 'x' + inputheight);
+  console.log('palettenumitems:  ' + palette.numitems);
+  encpitems = palette.items;
+//  console.log(paletteitems);
+  console.log('unpalettedpixels: ' + unpalettedpixels);
+  console.log('++++++++++++++++++++++++++ END OF ENCODE');
+  return truncedimagecode;
+}
+
+// ----------------------------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------------------------------
+// ENCODE ABOVE, DECODE BELOW -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// ====================================================================================================
+// ====================================================================================================
+// ====================================================================================================
+
+function decompresscode(imagecode) {
+  var codelength = imagecode.length;
+  if      (codelength <  14) { console.log('not code!') ;     return undefined; }
+  else if (codelength == 14) { console.log('no code!')  ;     return undefined; }
+  if (imagecode[0] != 255) { console.log('SOI.r != 255');     return undefined; }
+  var receivecolour = undefined, receivealpha = false; // FF0000[grey], FFFFFF[rgb], FFnnFF[rgba]
+  if (imagecode[1] == 255 && imagecode[2] == 255 ) { receivecolour = true; }     // FFFFFF is rgb only
+  else if (imagecode[2] == 255) { receivecolour = true; receivealpha = true; }   // FFabFF for rgba
+  else if (!imagecode[1] && !imagecode[2]) { receivecolour = receivealpha = false; } // FF for grey
+  else {
+    console.log('invalid SOI');
+    // todo: other data types for FFcdef where cd and ef are 0-254. cannot both be 0.
+    // if both 0, this condition is reached
+  }
+//  else if (imagecode[1] != 0 || imagecode[2] != 0) { console.log('invalid SOI'); return null; }
+  if (imagecode[3] != 0) { console.log('expect 0 at SOI.a');       return null; }
+  if (imagecode[4] != 0) { console.log('expect 0 at SOI.aa');      return null; }
+  var imagewidth  = imagecode[5] * 256 + imagecode[6];
+  var imageheight = imagecode[7] * 256 + imagecode[8];
+  if (imagecode[9] != 0) { console.log('expect 0 at SOI.aawwhha'); return null; }
+  var imagergbalen = imagewidth * imageheight * 4;
+  var imageout = new Uint8ClampedArray(imagergbalen);
+
+
+// ??? no need ????????????????????? defined local!
+//  var thispixel = new Uint8ClampedArray(4); // store trigger !
+//  thispixel[0] = thispixel[2] = 255; // magenta for default
+//  thispixel[1] = thispixel[3] = 0;   // empty trigger byte
+
+
+
+  // 2-byte palette index if preceded by 00 (FF not valid because trigger)
+  // FF00 - FFFF not valid because trigger/toggle/end-of-image(in-grey)
+  // FFFF(on) 00 FF ab are therefore mapped to 0-255 grey in palette
+
+
+  // -- MODE SWITCHES ---------------------------------------------------------
+  var modenumswitches = 254; // there is no mode FF, because FF is toggle redbyte
+  var modeenabled = new Uint8ClampedArray(modenumswitches + 1); // include mode 0
+  var palette = defaultpalette();
+  // colour 0 cannot be indexed, because 00 means read 2-byte paletteindex
+  //                                 and 00 0000 (2-byte 0) matches second 00 to mean 255 or 3-byte address ..
+  // 3-byte address counts using multibyte scheme, with a 253 offset and 7 bits per byte! 00 00 00 is NULL* !
+  // so, instead of 00 00 00, send 01. but that has default alpha ! transparent should use colour 0     !
+  //                          send 00 FF00 for full opacity black ! * NULL should use colour 0 (0% white)
+  //                          send 00 FF(0-255) for full opacity black-to-white greys ! instead of FF(0-255)
+  var unpalettedpixels = 0;  // fully opaque greys are always paletted !
+  var palettemode = 0;       // toggle triggered by FFFFFF[FF]
+  var repeatcount = 0;       // repeat triggered by FFFFFF[0-253,254] if palettemode on
+  var thisisatoggle = 0;     //   note that this is a toggle to later remember that-was-a-toggle
+  var thatwasatoggle = 0;    //   note that that was a toggle to later remember that-was-a-toggle-toggle
+  var thatwasatoggletoggle = 0; // remember that was a toggletoggle to add colour / prevent toggletoggletoggle
+  var paletteindex = -1;     // no paletteindex to begin with
+  var outputix = 0;          // start from top-left of output image array
+  var codeix = 10 - 1;       // after SOI frame (10 bytes!), -1 because pre-increment
+  while (codeix < codelength) { // read code (++codeix for every incrememt)
+    // -- TOGGLE HANDLING UPFRONT --------------------------------------------------------
+    // cannot clear thatwasatoggletoggle because it is used by redbyte
+    // if thiswasatoggle and thatwasatoggle and then another toggletoggle, that's a toggletoggletoggle
+    // a toggletoggletoggle appears after SOI indicating palettemode on then add colour straight up
+    if (thisisatoggle == 0) { // unless a toggle just happened (1 or -1)
+      thatwasatoggle = 0;
+      thatwasatoggletoggle = 0;
+    } // reset memory handlers
+    thisisatoggle = 0; // reset thisisatoggle flag -- all other toggle handling appears upon toggle
+    // any time a redbyte is read, the toggle memory shifts. first time is false. then read and handle.
+    var thispixel = new Uint8ClampedArray(4); // thispixel is local (not remembered globally)
+    thispixel[0] = imagecode[++codeix]; // read red to check for FFnnmm trigger ...
+    if (palettemode) { // indexed colour, or (FF FF/00 FF/00 [0-FF]) toggle/EOI/repeat
+      // if in palette mode, a trigger byte needs to be detected ....
+      // that also means it's not checking 1 or 2 yet !!!!
+      if (thispixel[0] == imagecode[0] && !thatwasatoggletoggle) { // toggle-toggle means add (can have FF red)
+        // grey mode is not special! FF redbyte reads two more bytes!
+                 // && !(receivecolour && thatwasatoggletoggle)) { // match FF redyte
+        // match FF redbyte unless in rgb/rgba mode following a toggle-toggle (add colour to palette instead)
+        // if grey mode has red FF, expect 00 00 for trigger!
+
+   // not expected: FF one-byte index.
+   // should be received as 00 00 FF .....
+
+   // but that'll cause addressing or .. make sure never writing index 0
+
+//        if (thatwasatoggletoggle) {
+
+//        if (receivecolour) { // match FFFF greenbyte-bluebyte in rgb, custom in rgba
+        if (receivecolour) { // trying FF triggers in grey!
+          thispixel[1] = imagecode[++codeix]; // rgb  FFFFFF
+          thispixel[2] = imagecode[++codeix]; // rgba FFnnmm
+        } else {
+          thispixel[1] = imagecode[1]; // should be a 0
+          thispixel[2] = imagecode[2]; // should be a 0
+        }
+
+        if (!thispixel[1] && !thispixel[2]) {
+          if (receivecolour) {
+            console.log('elusive red seen in decode!');
+            break;
+          } // expect this in grey mode
+        }
+        var greenmatch = (thispixel[1] == imagecode[1]);
+        var bluematch  = (thispixel[2] == imagecode[2]);
+        if (greenmatch && bluematch) {
+//      FFFFFFFF  FFFFFFFF  FFFFFFFF CC 01 FFFFFF09    <- add CC, CC pixel (index 01), 9 repeats
+//      palette mode starts as off, on-off-on to add first colour
+//      index 254 implies extra bytes available
+//      if in grey mode non-trigger and red matches, we can't be here
+//               that means if toggletoggle is 2 has no special meaning ...... here if red, that's it
+//                                                                             alpha if rgb (if r for grey)
+//        in grey, this digit follows an FF
+//        in rgb/rgba, this digit follows an FFFFFF. if in palettemode, indexes are 1-byte
+//          so we only read the 4th byte if the 2nd and 3rd bytes imply trigger mode
+//        but if index is 00, read extra bytes. that happens below if red was not trigger FF.
+//        this obviously means FFnn number range is out of bounds   FF00(65280) out of bounds
+//                                                                  FEFF(65279) is maximum
+          thispixel[3] = imagecode[++codeix]; // read trigger byte (FF0000nn in grey, FFxxyynn in rgb/rgba)
+          var endofimage = (thispixel[3] == 0x00);
+          var atoggle    = (thispixel[3] == 0xFF);
+          var singlebyterepeat = (thispixel[3] <= 0xFD);
+          var multibyterepeat  = (thispixel[3] == 0xFE);
+          if (endofimage) {
+            while (outputix < imagergbalen) { // green the remaining pixels
+              imageout[outputix++] = 0x37; imageout[outputix++] = 0x7A; // green it
+              imageout[outputix++] = 0x2C; imageout[outputix++] = 255;  // up .. full opacity
+            }; break; // any pighead integration after background is drawn
+          } else if (atoggle) { // thatwasatoggletoggle excluded in redbyte condition
+            if (repeatcount > 0) {
+              console.log('repeatcount not cleared prior!!');
+            } // if thatwasatoggletoggle is true, this section is not reached
+            if (thatwasatoggle == 1) { // there was a toggle
+              console.log('toggle-toggle on-off currently unhandled!');
+            } else if (thatwasatoggletoggle == 1) {
+              console.log('how can this be -toggle -on if palettemode was on!');
+            } else {
+              thisisatoggle = 1;  // remember this toggle to prevent memory reset
+              thatwasatoggle = 1; // remember this toggle- status pending -toggle
+            } // ; console.log('THIS IS A TOGGLE ON-OFF');
+            palettemode = !palettemode; // toggle, toggle-toggle and toggle-toggle-toggle considered
+          } else if (singlebyterepeat) { // 1-253
+            repeatcount = thispixel[3];
+repeatsin.push('[' + (0 - repeatcount) + ']');
+          } else if (multibyterepeat) {  //  254+
+            repeatcount = 254; // base for multi-byte adds 254 (not 253 ! as with paletteaddress!)
+            var repeatshift = 0;
+            var nextbyte = imagecode[++codeix]; // for 254, nextbyte will be a 0!
+            while (nextbyte >= 128) { // indicates another byte
+              repeatcount += ((nextbyte - 128) << repeatshift);
+              nextbyte = imagecode[++codeix];
+              repeatshift += 7;
+              if (repeatcount < 0) { console.log('integer overflow!'); break; }
+            } // read any number of repeats
+            repeatcount += (nextbyte << repeatshift); // add the "last" (0-7F) byte
+repeatsin.push('[' + repeatcount + ']');
+// BUG: ANY 1-BYTE INDEX AFTER REPEAT KEEPS READING
+// AND READS TOO MANY DIGITS
+//.. BUT NO IT STOPS BECAUSE LAST IS ALWAYS <= 127
+
+          } else { console.log('trigger byte out of range!'); break; } // range is 00-FF
+          if (repeatcount > 0 && outputix < 4) { // need to write a pixel before repeating a pixel
+            console.log('repeating null pixel!'); // if paletteindex starts at 0 this will be yellow
+          } else if (thisisatoggle) {
+            // thispixel[3] is 0xFF
+          } else { // clear repeats by writing them
+            if (repeatcount <= 0) { console.log('no repeats'); break; }
+            else { // duplicate the last written pixel n times
+              while (repeatcount >= 0) { // why 1 extra !?!
+                imageout[outputix + 0] = imageout[outputix - 4];
+                imageout[outputix + 1] = imageout[outputix - 3];
+                imageout[outputix + 2] = imageout[outputix - 2];
+                imageout[outputix + 3] = imageout[outputix - 1];
+                outputix += 4;
+                repeatcount--;
+              }
+            }
+          }
+        } else { // this is not expected -- if redbyte in palettemode is FF, expect a trigger match
+          console.log('FF redbyte in palettemode but not a trigger!');
+          console.log('MAJOR READ FAIL');
+          break;
+        } // end of read-trigger-byte handling
+      } else if (thatwasatoggletoggle) { // toggle-toggle detected, red byte non-matching (may be in rgb/rgba)
+        //console.log('toggletoggle at palettenumitems ' + palettenumitems);
+        // if there's another toggle, this could be a toggletoggletoggle!
+        //  a toggletoggletoggletoggle can double the number of colours to add
+        //  toggletoggletoggletoggletoggletoggle = 4
+        //  toggletoggletoggletoggletoggletoggletoggletoggle = 8
+        //  toggletoggletoggletoggletoggletoggletoggletoggletoggletoggle = 16
+        //  toggletoggletoggletoggletoggletoggletoggletoggletoggletoggletoggletoggle = 32
+
+
+//        console.log('really adding a colour!');
+
+        // redbyte may be FF
+
+        // redbyte was not FF ! or, thatwasatoggletoggle.
+
+        // if red byte was matching in grey, that is a grey toggle, detected as repeat toggle
+        // if red byte was matching in rgb/rgba, but that was a toggle-toggle, read a colour instead
+        // overall, read a colour any time
+        // in grey that means adding 1-byte colours to 1-byte palette indexing ...
+        // best to allow colours in grey mode then ...... FFFF(on) FFFF FFFF(add) .. no escape
+        paletteindex = palette.numitems; // point to end of palette + 1
+        var readpalettealpha = false;
+        var newcolourred = thispixel[0]; // red was already read!
+        if (receivealpha) { // default to rgba for rgba mode
+          readpalettealpha = true;
+          thispixel[1] = imagecode[++codeix]; // 0x00-0xFF
+          thispixel[2] = imagecode[++codeix]; // 0x00-0xFF
+          thispixel[3] = imagecode[++codeix]; // 0x00-0xFF
+//        } else if (newcolourred == 0xFF) { // that's a trigger in grey mode ..
+//          console.log('unexpected trigger in thatwasatoggletoggle'); // or a red colour!
+        } else if (newcolourred == 0) {
+          newcolourred = imagecode[++codeix];    // thispixel[1]
+          if (newcolourred == 0) {
+            newcolourred = imagecode[++codeix];  // thispixel[2]
+            if (newcolourred == 0) {
+              console.log('colour with alpha in grey/rgb mode');
+              readpalettealpha = true;
+            } else if (!receivecolour) { // flag blue colours in grey mode
+              var blueindex = newcolourred; // not reached because grey catchall
+              console.log('adding 0000nn in grey mode, blueindex is ' + blueindex);
+            } else { // 0000nn in rgb mode
+              // thispixel[0] is still 00
+              thispixel[1] = 0;            // from match condition
+              thispixel[2] = newcolourred; // from followup
+            } // end of 00 00 nn handler (00 = read rgba, else blue in rgb)
+          } else { // unpaletted 00nnmm in grey/rgb
+            // thispixel[0] is still 00
+            thispixel[1] = newcolourred;
+            thispixel[2] = imagecode[++codeix];
+          } // end of handling for 0000 prefix
+        } else { // default to rgb for rgb and grey mode
+          // if (!receivecolour) to not default to rgb in grey mode
+          // thispixel[0] is nonzero, and it could be FF!
+          // if thatwasatoggle is true, palettemode should be off now
+          thispixel[1] = imagecode[++codeix];
+          thispixel[2] = imagecode[++codeix];
+        } // end of handling for 00 prefix
+        var newpalix = paletteindex * 4;
+        if (readpalettealpha && !receivealpha) { // 0,0,0,rgba for rgb/grey palette
+          palette.items[newpalix + 0] = imagecode[++codeix];
+          palette.items[newpalix + 1] = imagecode[++codeix];
+          palette.items[newpalix + 2] = imagecode[++codeix];
+          palette.items[newpalix + 3] = imagecode[++codeix];
+        } else if (receivealpha) { // rgba in rgba (readpalettealpha is also true)
+          palette.items[newpalix + 0] = thispixel[0];
+          palette.items[newpalix + 1] = thispixel[1];
+          palette.items[newpalix + 2] = thispixel[2];
+          palette.items[newpalix + 3] = thispixel[3];
+        } else { // default to rgb 3-byte for grey and rgb palettes !
+          palette.items[newpalix + 0] = thispixel[0];
+          palette.items[newpalix + 1] = thispixel[1];
+          palette.items[newpalix + 2] = thispixel[2];
+          palette.items[newpalix + 3] = defaultalpha;
+        }
+        palette.numitems++; // end of add-colour-to-palette-after-toggletoggle handling
+        if (thisisatoggle ) { console.log('thisisatoggle after palette add!');  break; }
+        if (thatwasatoggle) { console.log('thatwasatoggle after palette add!'); break; }
+        thatwasatoggletoggle = 0; // reset addcolour flag to prevent loopyness!
+      } else { // in palette mode, not a trigger/repeat, not a colour-to-add, thus a paletteindex
+        paletteindex = thispixel[0]; // red byte is first index byte (1-byte paletteindex)
+        if (paletteindex == 255) { console.log('single-index 255 not expected!'); break; }
+        paletteaddress = 0;          // no address unless it starts with 00 0000 and isn't 00 0000 FF
+        if (paletteindex == 0) {     // a 0 paletteindex implies this is a 2-byte index
+          var paletteindexupper = imagecode[++codeix]; // ab in 00 ab(cd)
+          var paletteindexlower = imagecode[++codeix]; // cd in 00 ab cd
+          paletteindex = (paletteindexupper << 8) + paletteindexlower; // 0-65535
+
+repeatsin.push(0 - paletteindex);
+//console.log('2-byte paletteindex ' + paletteindex);
+//if (paletteindex < 256) { break; }
+
+          if (paletteindex == 0) {   // if paletteindex is still 0, this is 255 or an address
+
+
+// wait .... FF is sent as 00 00 00 FF ???????
+
+if (paletteaddress != 255) {
+  console.log('unexpected paletteaddress read!');
+  break; // not using this feature yet!
+}
+
+            var paletteaddress = imagecode[++codeix];  // ef in 00 00 00 ef
+            if (paletteaddress == 255) { // the special 1-byte 255 (FF) as 4-byte 00 0000 FF
+              paletteindex = paletteaddress; // paletteindex t0 255 -- 4-byte 00 0000 0-253 are low addresses
+              paletteaddress = 0;            // thus there is no address 255 here (use multibyte)
+              console.log('4-byte 255 received!');
+            } else { // this is a paletteaddress (including NULL as 00 0000 00 and 255 as 00 0000 FE02)
+              if (paletteaddress == 254) {   // resolve multibyte addresses (can be any length)
+                paletteaddress = 253; // 00 00 nm nm nm nm nm nm nm nm + 253 (0-253 are LOW addresses)
+                var upperaddress = 0;                            // 253   = 253; // 253 low   address ( 00FD   )
+                var nextbyte = imagecode[++codeix];              // 254,0 = 253; // 253  high address ( 00FE00 )
+                var shiftby = 0;                                 // 254,1 = 254; // 254  high address ( 00FE01 )
+                while (nextbyte >= 128) {                        // 254,2 = 255; // 255  high address ( 00FE02 )
+                  upperaddress += ((nextbyte % 128) << shiftby); // 255   = 255; // 255 low   address ( 0000FF )
+                  nextbyte = imagecode[++codeix];                // 254,3 = 256; // 256  high address ( 00FE03 )
+                  shiftby += 7;                                  // 254,4 = 257; // 257  high address ( 00FE04 )
+                }
+                paletteaddress += upperaddress; // 253+0 = 253, 253+1 = 254, 253+2 = 255, etc
+              } // else paletteaddress is singlebyte (0-253) .. LOW RANGE: 0 to 253, HIGH RANGE: 253+
+            } // end of paletteaddress 255 handling (address 00 00 FF)
+          } // end of low two-byte paletteindex handling (00 [00 nn])
+        } else { // single-byte paletteindex was read .... not 0, not FF ...
+          if (paletteindex <= 0) { // 0 led to 2-byte read !
+            console.log('LQ00 paletteindex not expected!'); break;
+          } else if (paletteindex >= 0xFF) { // 255 should be as 00 00FF!
+            console.log('GQFF paletteindex not expected!'); break;
+          } else if (paletteindex == palette.numitems) {
+            console.log('unhandled paletteindex!');         break;
+          }
+repeatsin.push(paletteindex);
+
+//console.log('paletteindex ' + paletteindex + ' added at index ' + outputix);
+          
+
+        }
+
+
+        // do something with paletteaddress here ....................................
+        if (paletteindex == 0 && paletteaddress == 0) {
+          console.log('paletteindex 0 is unaddressable!');
+        } else if (paletteindex == 0) { // address is nonzero
+          console.log('unhandled paletteaddress is ' + paletteaddress);
+          break; // todo: address handler
+        } else { // paletteindex is nonzero ! no negative expected here
+          var thpix = paletteindex *  4; // expect max paletteindex to be FFFF
+          imageout[outputix++] = palette.items[thpix + 0];
+          imageout[outputix++] = palette.items[thpix + 1];
+          imageout[outputix++] = palette.items[thpix + 2];
+          imageout[outputix++] = palette.items[thpix + 3];
+        } // paletteaddress is used when 2-byte paletteindex is 0 because 1-byte paletteindex was 0
+          // a paletteindex can be 1-byte 1-254, 2-byte 255, 2-byte 256-65535, 000000 2-byte address ....
+          //    00 then low 2-byte 0000-00FE is used for paletteaddress, paletteindex is 0
+          //    00 then low 2-byte 00FF is 255, paletteaddress is 0 (palette index code is 0000FF)
+          //    00 then 00 00 then paletteaddress (00000000 is NULL, 000000FD is 1-253, 000000FE is multibyte)
+          //    000000FF is low address 255. 000000FE02 is high address 255
+          //    there is no low address 254. 253 low, high is 000000FD, 000000FE00
+        // end of paletteaddress handling ...........................................
+      } // end of paletteindex handling; end of palettemode handling
+    // --------------------------------------------------------------------------------------
+    // -- UNPALETTED COLOUR HANDLING (grey only) --------------------------------------------
+    } else if (!receivecolour) { // catch-all for unpaletted-mode grey
+//      var greyunpalettedtrigger = false; // check for FF0000 byte-by-byte
+//      if (thispixel[0] == imagecode[0]) { // red FF while palettemode is off means toggle
+//        thispixel[1] = imagecode[++codeix];
+//        if (thispixel[1] == imagecode[1]) { // expect 0 match
+//          thispixel[2] = imagecode[++codeix];
+//          if (thispixel[2] == imagecode[2]) { // expect 0 match
+//            greyunpalettedtrigger = true;
+//          } else { console.log('unmeaningful FFnnnn in grey mode'); }
+//        } else { console.log('unmeaningful FFnn in grey mode'); }
+//      }
+      var greyunpalettedtrigger = (thispixel[0] == imagecode[0]);
+      if (greyunpalettedtrigger) { // FF match
+        thispixel[3] = imagecode[++codeix]; // read trigger byte
+        var endofimage = (thispixel[3] == 0x00);
+        var atoggle    = (thispixel[3] == 0xFF);
+        if (endofimage) { // with palette mode off
+          while (outputix < imagergbalen) { // fc3 the remaining pixels
+            imageout[outputix++] = 0x77; imageout[outputix++] = 0x77; // grey..
+            imageout[outputix++] = 0x77; imageout[outputix++] = 0x77; // ..it out
+          }; break; // any pighead integration after background is drawn
+        } else if (atoggle) { // toggle palette mode to be on
+          if (thatwasatoggle == 1) {
+            thatwasatoggletoggle = 1; // add colour starts here!
+          } // toggle-toggle at SOI not possible (thatwasatoggle starts 0)
+          thatwasatoggle = 0; // don't remember -off toggles
+          thisisatoggle = 1; // prevent memory reset
+          palettemode = !palettemode; // toggle, toggle-toggle and toggle-toggle-toggle considered
+        } else { // FF 1-254 when palettemode is off is mode switch
+          var modeindex = thispixel[3]; // toggle which mode (1-254)
+          var modeisnow = (modeenabled[modeindex] = !modeenabled[modeindex]) ? 'on' : 'off';
+          console.log('grey mode ' + thispixel[3] + ' toggled to ' + modeisnow);
+        } // end of unpaletted-grey-mode-toggle handling
+      } else { // end of red byte FF handling ... unpaletted colour 0-254 ....
+        // FF FF    - toggle
+        // FF 00    - end of image
+        // FF 01-FE - mode switches
+        // 00-FE    - ...header text ? literally have NUL and \n and box drawing indexes
+        // read header text until FF
+      }
+    // --------------------------------------------------------------------------------------
+    // -- UNPALETTED COLOUR HANDLING (rgb/rgba only) ----------------------------------------
+    } else { // palette mode is off -- a non-indexed colour is here (not expected in grey mode!)
+      // grey mode has 1-byte unpaletted colours !!!!!!!!!!!!! (it was handled above)
+      //  but it defaults to rgb when colours are added to the palette.
+      //  and in palette mode, indexes and repeats are the same
+      // but if palettemode is off, still need to check for toggle trigger .... and EOI
+      // there are however no repeats. repeats if palettemode is off ??????
+      // FFFFFF[01] if palettemode is off means toggle mode 1
+      // FFFFFF[02] if palettemode is off means toggle mode 2
+      // in grey mode, all colours are paletted
+      // colours with alpha are preceded by 00 00 00 in rgb mode !
+      // that means colour 1, black at default alpha, cannot be written as unpaletted!
+      // also, colour 2, white at default alpha, cannot be written as unpaletted!
+      //   these have now been remapped to 0xFF00 (palette.black) and 0xFFFF (palette.white)
+      //   (in grey, FF0000, red, cannot be written as unpaletted. warning!!)
+      // also makes sense for FFFFFF to fail unpaletted! it is colour 2 ! and a trigger!
+//      if (receivecolour) { // no need because grey catchall
+      thispixel[1] = imagecode[++codeix];
+      thispixel[2] = imagecode[++codeix];
+      var imagecodered   = (thispixel[0] == imagecode[0]);
+      var imagecodegreen = (thispixel[1] == imagecode[1]);
+      var imagecodeblue  = (thispixel[2] == imagecode[2]);
+      var receivethisalpha = false;
+      if (imagecodered && imagecodegreen && imagecodeblue) { // detect trigger
+        thispixel[3] = imagecode[++codeix];
+        var endofimage = (thispixel[3] == 0x00);
+        var atoggle    = (thispixel[3] == 0xFF);
+        if (endofimage) { // end of rgb/rgba image with palettemode off
+          while (outputix < imagergbalen) { // sky blue the remaining pixels
+            imageout[outputix++] = 0x11; imageout[outputix++] = 0xE0; // sky blue it
+            imageout[outputix++] = 0xFF; imageout[outputix++] = 255;  // up .. full opacity
+          }; break; // any pighead integration after background is drawn
+        } else if (atoggle) { // palettemode off to on
+          if (thatwasatoggle == 1) { // a toggle-toggle off-on
+            thatwasatoggletoggle = 1; // add colour starts here!
+          } // toggle-toggle at SOI not possible (thatwasatoggle starts 0)
+          thatwasatoggle = 0; // don't remember -off toggles
+          thisisatoggle = 1; // prevent memory reset
+          palettemode = !palettemode; // toggle, toggle-toggle and toggle-toggle-toggle considered
+        } else { // this is a mode toggle (1-254) -- can only toggle mode if palettemode is off !
+          var modeindex = thispixel[3]; // toggle which mode (1-254)
+          var modeisnow = (modeenabled[modeindex] = !modeenabled[modeindex]) ? 'on' : 'off';
+          console.log('mode ' + thispixel[3] + ' toggled to ' + modeisnow);
+        } // end of unpaletted-mode-toggle handling
+      } else if (thispixel[0] + thispixel[1] + thispixel[2] == 0) { // detect rgba in rgb
+        //console.log('rgba in rgb detected!');
+        //break; // not expected!
+        // if (receivealpha), this is black with alpha, which flags receivethisalpha
+        // if grey/rgb, this is 00 00 00, meaning read a 4-byte colour with alpha channel
+        // this also happens with addcolour to palette ...
+        //    00 00 00 with full opacity is mapped to paletteindex FF00
+        receivethisalpha = true;
+        if (!receivealpha) { // if rgb, this is a prefix to read an rgba colour unpaletted
+          thispixel[0] = imagecode[++codeix];
+          thispixel[1] = imagecode[++codeix];
+          thispixel[2] = imagecode[++codeix];
+          thispixel[3] = imagecode[++codeix];
+        } else { // black with alpha in rgba
+          thispixel[3] = imagecode[++codeix];
+        } // end of rgba in rgb and rgba in rgba
+          // grey mode was handled above in the catch-all because 1-byte unpaletted colours
+      } else if (receivealpha) { // non-000000 with alpha in rgba
+        receivethisalpha = true;
+        thispixel[3] = imagecode[++codeix];
+      }
+      if (!receivethisalpha) { // rgb (excluding rgba in rgb)
+        thispixel[3] = defaultalpha;
+      } else if (thatwasatoggletoggle == 1) {
+        // no need to add the trigger as a white 100% opacity pixel
+        console.log('thatwasatoggletoggle');
+        break; // expect ! or not ..
+      } else {
+        imageout[outputix++] = thispixel[0];
+        imageout[outputix++] = thispixel[1];
+        imageout[outputix++] = thispixel[2];
+        imageout[outputix++] = thispixel[3];
+        unpalettedpixels++; // this addition to imageout is an unpaletted-colour
+      }
+    } // end of palette-mode-is-off (unpaletted-colour) handling
+  } // end of read-code iterator/loop handling
+  var imagedataout = new ImageData(imageout, imagewidth, imageheight);
+  console.log('output image size: ' + imagewidth + 'x' + imageheight);
+  console.log('palettenumitems:  ' + palette.numitems);
+//  console.log(paletteitems);
+var pdiff = [];
+for (i = 0; i < repeats.length; i++) {
+  if (repeatsin[i] != repeats[i]) {
+    console.log('difference at index ' + i + ': ' + repeats[i] + ' vs ' + repeatsin[i]);
+    break;
+//  } else {
+//    console.log('same at index ' + i + ': ' + repeats[i]);
+  }
+}
+console.log(repeats);
+console.log(repeatsin);
+
+  console.log(pdiff);
+  console.log('unpalettedpixels: ' + unpalettedpixels);
+  console.log('-------------------------- END OF DECODE');
+  return imagedataout; // imageout;
+}
+
+

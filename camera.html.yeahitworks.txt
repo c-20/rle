@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset='UTF-8'>
+  <title>camera()</title>
+  <style type='text/css'>
+/*
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+*/
+/* flex mode not supported in XP */
+/* hides camera button; sucks anyway */
+
+#results > div {
+  width: 31%;
+  text-align: center;
+  line-height: 24px;
+}
+
+@media (max-width: 800px) {
+  #results {
+    flex-flow: column;
+  }
+  
+  #results > div {
+    width: 100%;
+    margin-bottom: 24px;
+  }
+}
+
+video, canvas {
+  border: 2px solid rgba(255, 255, 255, 1);
+  background: #263238;
+  padding: 2px;
+/*
+  height: 240px;
+  width: 320px;
+*/
+}
+  </style>
+  <script type='text/javascript' src='rle.js'></script>
+  <script type='text/javascript'>
+/*
+function drawimagetocanvas(canvas, image) {
+  canvas.width  = getComputedStyle(canvas).width.split('px')[0];
+  canvas.height = getComputedStyle(canvas).height.split('px')[0];
+  let ratio = Math.min(canvas.width / image.width, canvas.height / image.height);
+  let x = (canvas.width  - image.width  * ratio) / 2;
+  let y = (canvas.height - image.height * ratio) / 2;
+  canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+  canvas.getContext('2d').drawImage(image, 0, 0, image.width, image.height,
+                                    x, y, image.width * ratio, image.height * ratio);
+}
+*/
+
+var mediastream = null;
+var nocamera = null;
+var camera  = null;
+var camvas  = null;
+var comvas  = null;
+var cimage  = null;
+var cstatus = null;
+var cwidth = 0;
+var cheight = 0;
+
+// var framecapture = null;
+
+/*
+function clearcamvas() {
+  if (!camera || !camvas || !cimage) { return; }
+  cwidth = camera.clientWidth;
+  cheight = camera.clientHeight;
+  if (isNaN(cheight)) { cheight = cwidth / (4/3); }
+  camvas.setAttribute('width',  cwidth );
+  camvas.setAttribute('height', cheight);
+  cimage.setAttribute('width',  cwidth );
+  cimage.setAttribute('height', cheight);
+  var context = camvas.getContext('2d');
+  context.fillStyle = '#bbb';
+  context.fillRect(0, 0, cwidth, cheight);
+  var imgdata = camvas.toDataURL('image/png');
+  cimage.setAttribute('src', imgdata);
+}
+*/
+
+// cannot detect this error in older Javascript!
+// XP client needs to load a separate 
+
+var asyncfail = false;
+var mediafail = false;
+var cameraon = false;
+var framefpsmax = 5.0;
+var framefpsmaxms = 1000 / framefpsmax;
+
+function camerafailed() {
+  cameraon = false; // make sure
+  var errormsg = 'unknown error!';
+  if      (asyncfail) { errormsg = 'async error!'; }
+  else if (mediafail) { errormsg = 'media error!'; }
+  console.log('camera error flagged (0bb)!');
+  if (!cstatus) { cstatus = document.getElementById('cstatus'); }
+  document.body.style.backgroundColor = '#0bb';
+  var thecamera = document.getElementById('camera');
+  cstatus.innerHTML = errormsg;
+}
+
+//try {
+//  eval("async function testasyncsupport() {}");
+//  console.log("async supported!");
+//  testasyncsupport();
+  // XP firefox supports async, XP chrome does not
+// start of normal function
+//eval(`
+
+function sleepwait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function camerabuttonclick() {
+  nocamera = document.getElementById('nocamera');
+  camera = document.getElementById('camera');
+  camvas = document.getElementById('camvas');
+  comvas = document.getElementById('comvas');
+  cimage = document.getElementById('cimage');
+  cstatus = document.getElementById('cstatus');
+  var media = window.navigator.mediaDevices;
+  if (!media) {
+    cstatus.innerHTML = 'window.navigator.mediaDevices fail!';
+    mediafail = true;
+    camerafailed(); // media = navigator.mediaDevices;
+  } else {
+//  try {
+    const stream = await media.getUserMedia({ video: true }); // , audio: true });
+
+    cstatus.innerHTML = 'waiting for stream...';
+    while (!stream) {
+      await sleepwait(500);
+      cstatus.innerHTML += '.';
+    }
+    const tracks = stream.getVideoTracks();
+    cstatus.innerHTML = 'streaming ' + tracks.length + ' video tracks...';
+    // TODO: add [track 1 2] switch when more than one
+    //  framecapture = new ImageCapture(tracks[0]);
+    //  console.log('ready to capture frames from track 1...');
+    camera.srcObject = stream;
+    document.getElementById('nocamera').style.display = 'none';
+    document.getElementById('camera').style.display = 'block';
+    camera.play();
+    cstatus.innerHTML = 'waiting for size...';
+    while (!cwidth || !cheight) {
+      cwidth  = camera.videoWidth;
+      cheight = camera.videoHeight;
+      await sleepwait(500);
+      cstatus.innerHTML += '.';
+    }
+    cstatus.innerHTML = 'stream size: ' + cwidth + 'x' + cheight;
+    mediastream = stream;
+//    clearcamvas(); // clear before play? i dunno ...
+    cameraon = true;
+  }
+}
+
+//  } catch (e) {
+//    console.log('await media.getUserMedia() failed!');
+//    mediafail = true;
+//    camerafailed();
+//  }
+//}
+// `); // ES6 required for backticks!
+// end of normal function
+
+/*
+} catch (e) {
+// start of fallback function
+  function camerabuttonclick() {
+    console.log('fallback function! no async!');
+    if (!asyncfail) {
+      // no document object yet
+      asyncfail = true;
+      console.log('async error detected!');
+    } else {
+      camerafailed();
+    }
+  }
+  camerabuttonclick(); // sets asyncfail to true
+// end of fallback function
+}
+*/
+
+
+//  mediastream = navigator.mediaDevices.getUserMedia({video: true});
+//               .then(mediaStream => {
+//  document.getElementById('camera').srcObject = mediastream;
+//  const track = mediaSsream.getVideoTracks()[0];
+//  imageCapture = new ImageCapture(track);
+//  })
+//  .catch(error => console.log(error));
+//}
+
+
+function codehex(buffer) {
+  return [...new Uint8Array(buffer)]
+    .map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
+function codetoimage(buffer, width, height) {
+  var imagelen = width * height;
+  var imagebytelen = imagelen * 4;
+//  var bytewidth = width * 4;
+  var image = new Uint8ClampedArray(imagebytelen);
+  var bufix = -1;
+  var x = 0, y = 0;
+console.log('bufferlen: ' + buffer.length);
+console.log('width: ' + width);
+  while (++bufix < buffer.length) {
+    var outix = (y * width + (x / 2)) * 4;
+    if (outix + 7 > imagebytelen) {
+      console.log('codetoimage overflow!');
+      break;
+    }
+    image[outix + 0] = buffer[bufix];
+    image[outix + 1] = (y % 128) * 2;
+    image[outix + 2] = (x % 256);
+    image[outix + 3] = 255;
+    image[outix + 4] = 192;
+    image[outix + 5] = 0;
+    image[outix + 6] = 192;
+    image[outix + 7] = 255;
+    x += 2;
+    if (x >= width) { x = 0; y++; }
+  }
+console.log('imagelen: ' + image.length);
+  return image;
+}
+
+function framebuttonclick() {
+  if (!camvas ) { camvas  = document.getElementById('camvas');  }
+  if (!comvas ) { comvas  = document.getElementById('comvas');  }
+  if (!cimage ) { cimage  = document.getElementById('cimage');  }
+  if (!cstatus) { cstatus = document.getElementById('cstatus'); }
+  var errortarget = (cimage) ? cstatus : document.body;
+  if (!mediastream) {
+    console.log('drawing nocamera because no mediastream');
+//    cstatus.innerHTML += '<br />no mediastream yet!';
+    if (camvas) {
+      var nocamera = document.getElementById('nocamera');
+      var context = camvas.getContext('2d');
+
+
+      cwidth  = 640;
+      cheight = 480;
+
+//      cwidth  = 100;
+//      cheight = 100;
+
+
+//      cwidth  = 310;
+//      cheight = 230;
+
+
+// the width and height are the width and height of context surely ...
+
+
+      context.drawImage(nocamera, 0, 0, cwidth, cheight);
+    } else { errortarget.innerHTML = 'no camvas for nocamera!'; }
+//    return;
+  } else if (!camera || !camvas || !comvas || !cimage) {
+    errortarget.innerHTML = 'cobject error';
+    return;
+  } else if (!cameraon) {
+    cstatus.innerHTML += '<br />no camera.play() yet!';
+    return;    
+  } else if ((!cwidth || !cheight) && camera) {
+    cwidth  = 640; //camera.videoWidth;
+    cheight = 480; //camera.videoHeight;
+    if (!cwidth || !cheight) {
+      cstatus.innerHTML += '<br />no mediasize yet!';
+      return;
+    } else { cstatus.innerHTML += '<br />mediasize set!'; }
+  }
+//  if (!mediastream) { // button should be disabled
+//    if (camvas) {
+//      var nocamera = document.getElementById('nocamera');
+//      var context = camvas.getContext('2d');
+//      cwidth  = 310;
+//      cheight = 230;
+//      context.drawImage(nocamera, 0, 0, cwidth, cheight);
+//    } else { errortarget.innerHTML = 'no camvas for nocamera!'; }
+//  } // expect nocamera object to be defined!
+//    console.log('mediastream not available');
+//  } else if (!cameraon) {
+//    errortarget.innerHTML = 'cameraon is false!';
+//    return;
+//  } else if (!cwidth || !cheight) {
+//    errortarget.innerHTML = 'csize error';
+//    return;
+//  }
+//  if (cwidth && cheight) { // with or without mediastream
+  if (1) {
+    var context = camvas.getContext('2d');
+    context.filter = 'contrast(200%) saturate(50%)'; // re-applying each frame
+    if (mediastream) {
+      context.drawImage(camera, 0, 0, cwidth, cheight);
+    } // else nocamera was drawn earlier
+
+
+    var imagedata = context.getImageData(0, 0, cwidth, cheight);
+
+    var imagecode = compressbitmap(imagedata);
+
+//console.log('imagecode for image ' + cwidth + 'x' + cheight);
+//console.log(codehex(imagecode));
+
+    var imagedatalength = cwidth * cheight * 4;
+    var imagecodelength = imagecode.length;
+    var datasizepercent = Math.trunc(imagecodelength / imagedatalength * 10000) / 100;
+    var msg = 'result is ' + datasizepercent + '% of the input size';
+    cstatus.innerHTML = msg;
+
+    var comvaswidth  = comvas.offsetWidth;
+    var comvasheight = comvas.offsetHeight;
+    var datacode = codetoimage(imagecode, cwidth, cheight);
+//comvaswidth, comvasheight);
+//cwidth, cheight);
+//    var datacodeimage = new ImageData(datacode, comvaswidth, comvasheight);
+
+    var datacodeimage = new ImageData(datacode, cwidth, cheight);
+    var comtext = comvas.getContext('2d');
+    comtext.putImageData(datacodeimage, 0, 0); // dirtyX,Y before W/H!!, cwidth, cheight);
+//    comtext.drawImage(datacodeimage, 0, 0, comvaswidth, cwidth, cheight);
+    var pngimgdata = comvas.toDataURL('image/png');
+    cimage.setAttribute('src', pngimgdata);
+
+var rebuild = decompresscode(imagecode);
+////console.log(rebuild);
+////var rebuilt = new ImageData(rebuild, cwidth, cheight);
+//comtext.drawImage(rebuild, 10, 10, cwidth, cheight);
+comtext.putImageData(rebuild, 0, 0);
+
+
+return; // stop frame loop
+
+  }
+  if (cameraon) { // loop timeout
+    setTimeout(function() { framebuttonclick(); }, framefpsmaxms);
+  }
+}
+
+function sendobuttonclick() {
+  var switchbox = document.parentElement;
+  var switchdash = switchbox.parentElement;
+  console.log('check here');
+  if (!switchbox || !switchdash) { console.log('switchdash error'); }
+  else if (!camvas) { console.log('camvas error'); }
+  else if (!comvas) { console.log('comvas error'); }
+  else {
+    console.log('TODO: sendo !');
+//    var imgdata = comvas.toDataURL('image/png');
+//    switchdash.sendpacket(imgdata);
+  }
+}
+  </script>
+</head>
+<body>
+  <div>
+    <video id='camera' style='display: none;
+                              position: absolute; top: 5px; left: 5px;
+                              right: 5px; bottom: 5px; z-index: -1;
+                              border: #0cc solid 5px;' autoplay></video>
+    <div style='display: flex;'>
+      <canvas id='camvas' width='640' height='480'
+         style='transform: scale(0.5); margin-left: -12%; margin-top: -8%;
+                float: right; border: #fc3 solid 5px;'></canvas>
+      <canvas id='comvas' width='640' height='480'></canvas>
+      <img id='cimage' alt='NO FRAME' style='border: #fc3 solid 5px;' />
+    </div>
+    <img id='nocamera' src='nocamera.webp' width='30' height='20'
+      style='float: left; border: #fc3 solid 5px;' />
+    <br />
+    <div style='display: flex;'>
+      <button id='camerabutton'>Camera</button>
+      <button id='framebutton'>Frame</button>
+      <button id='sendobutton'>Sendo</button>
+    </div>
+    <div id='cstatus' style='font-weight: bold; color: #fc3;'>Waiting for start</div>
+  </div>
+<script>
+  if (asyncfail) {
+    // auto-click to adjust body objects
+    camerabuttonclick();
+  } else {
+    // wait for click, for now
+    document.getElementById('camerabutton').addEventListener('click', camerabuttonclick);
+    document.getElementById('framebutton').addEventListener('click', framebuttonclick);
+    document.getElementById('sendobutton').addEventListener('click', sendobuttonclick);
+    
+    document.getElementById('camera').addEventListener('play', function() {
+      if     (!cstatus) { document.body.innerHTML = 'expected cstatus!'; } 
+      else if (!camera) { cstatus.innerHTML = 'expected camera!'; }
+      else { // above should never happen
+        cameraon = true;
+        cwidth = cheight = 0; // size may be different; recalibrate
+//while (!cwidth || !cheight) {
+//        cwidth  = camera.videoWidth;
+//        cheight = camera.videoHeight;
+//console.log('camera size set!! ' + cwidth + 'x' + cheight);
+//}
+ //     document.getElementById('sendobutton').disabled = false;
+//        setTimeout(function() { framebuttonclick(); }, framefpsmaxms);
+      } // start frame capture loop
+    });
+    // takePhoto() -> Blob, grabFrame() -> ImageBitmap
+  }
+  
+  framebuttonclick(); // error check !
+</script>
+
+</body>
+</html>
+
+
+
